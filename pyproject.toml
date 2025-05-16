@@ -1,0 +1,14 @@
+[tool.poetry]
+name = "stgpx"
+version = "0.1.0"
+description = "Tool to download Sports-Tracker routes as GPX files."
+authors = ["Paul D.Smith <paul@pauldsmith.org.uk>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
