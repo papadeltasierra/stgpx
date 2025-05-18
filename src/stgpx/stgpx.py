@@ -6,8 +6,12 @@ from typing import List
 import logging
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from time import sleep
+from random import random
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +34,14 @@ def argparse(argv: List[str]) -> Namespace:
         help="Increase debugging  (up to 3 times)",
     )
     parser.add_argument("-l", "--logfile", action="store", help="Debug logfile name")
-    parser.add_argument("-m", "--mode", action="store", help="Operation mode")
+    parser.add_argument(
+        "-m",
+        "--mode",
+        action="store",
+        help="Operation mode",
+        required=True,
+        choices=["list", "download"],
+    )
 
     loginGroup = parser.add_argument_group("login", "Login to Sports-Tracker")
     loginGroup.add_argument(
@@ -114,8 +125,10 @@ def main(argv: List[str]):
     if args.chrome:
         log.info("Using Chrome WebDriver")
         options = webdriver.chrome.options.Options()
-        options.add_argument("--headless")
-        driver = webdriver.Chrome()
+        prefs = {"download.default_directory": "c:\\temp\\gpx"}
+        # options.add_argument("headless")
+        options.add_experimental_option("prefs", prefs)
+        driver = webdriver.Chrome(options=options)
     elif args.edge:
         log.info("Using Edge WebDriver")
         driver = webdriver.Chrome()
@@ -159,13 +172,58 @@ def main(argv: List[str]):
                 (By.XPATH, "//input[@placeholder='Email or username']")
             )
         )
-        passwordField = driver.find_element("xpath", "//input[@placeholder='Password']")
+        passwordField = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located(
+                (By.XPATH, "//input[@placeholder='Password']")
+            )
+        )
+
         usernameField.send_keys(args.username)
         passwordField.send_keys(args.password)
-        log.debug("Pressing the login button")
-        logInButton = driver.find_element("xpath", "//input[@value='Login']")
-        logInButton.click()
-        amLoggedIn = True
+
+        facebookSpan = WebDriverWait(driver, 2).until(
+            EC.presence_of_element_located(
+                (
+                    By.XPATH,
+                    "//span[text()='Login with Facebook']",
+                )
+            )
+        )
+        # Login seems to be flakey so loop it and try three times!
+        attempts = 0
+        while True:
+            log.debug("Clicking on the login button")
+            logInButton = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//input[@value='Login']"))
+            )
+            logInButton.send_keys(Keys.ENTER)
+            sleep(1)
+
+            try:
+                facebookSpan = WebDriverWait(driver, 2).until(
+                    EC.presence_of_element_located(
+                        (
+                            By.XPATH,
+                            "//span[text()='Login with Facebook']",
+                        )
+                    )
+                )
+                log.debug("Facebook buttont is visible.")
+            except Exception as ee:
+                log.debug("Login appears to have succeeded")
+                # No oops so assume we are OK.
+                break
+
+            log.debug("Login failed, retrying...")
+            usernameField.clear()
+            passwordField.clear()
+            usernameField.send_keys(args.username)
+            passwordField.send_keys(args.password)
+            attempts += 1
+            if attempts > 5:
+                log.error("Failed to login after 5 attempts.")
+                raise Exception("Failed to login after 5 attempts.")
+            sleep(1 + random() * 2)
 
     try:
         # Confirm that we see the "Dashboard" element.
@@ -173,6 +231,7 @@ def main(argv: List[str]):
         WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//button[@ng-show='loggedInUser']"))
         )
+        amLoggedIn = True
         # Now do the activity requested.
         if args.mode == "list":
             log.info("Listing activities...")
@@ -180,7 +239,87 @@ def main(argv: List[str]):
         elif args.mode == "download":
             log.info("Downloading activities...")
 
+            log.debug("Check if Menu visible")
+            try:
+                menuButton = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable(
+                        (By.XPATH, "//button[@class='nav-menu-toggle']")
+                    )
+                )
+                menuButton.click()
+            except:
+                log.debug("Menu button not found, assuming already open.")
+
+            log.debug("Go to dashboard")
+            dashboardHyperlink = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//a[text()='Dashboard']"))
+            )
+            dashboardHyperlink.click()
+
+            log.debug("Goto 'My Workouts'")
+            myWorkoutsSpan = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//span[text()='My workouts']"))
+            )
+            myWorkoutsSpan.click()
+
+            log.debug("listing workouts")
+            # Get all elements of type li and class "workout-item"
+            workoutItems = WebDriverWait(driver, 10).until(
+                EC.presence_of_all_elements_located(
+                    (By.XPATH, "//li[@class='workout-item']")
+                )
+            )
+
+            log.debug("download file for workouts")
+            for workoutItem in workoutItems:
+                log.debug("Clicking on workout item")
+                # Click on the workoutItem to open the workout.
+                feedCardHref = workoutItem.find_element(
+                    By.XPATH, "//a[@class='feed-card__link']"
+                )
+                feedCardHref.click()
+
+                # Wait for and then click on the 'Edit' button.
+                log.debug("Click on the Edit button")
+                editButton = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[text()='Edit']"))
+                )
+                editButton.click()
+
+                # Wait for and then click on the 'Export' button.  We do not get the
+                # file save dialog in test-mode.
+                log.debug("Clicking on the 'Export' button")
+                exportButton = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[text()='Export']"))
+                )
+                exportButton.click()
+
+                # We dno't seem able to catch the "Cancel" button so we just
+                # send the ESC key.
+                log.debug("Using ESC to exit the dialog")
+                actions = ActionChains(driver)
+                actions.send_keys(Keys.ESCAPE).perform()
+
+                log.debug("Check if Menu visible")
+                try:
+                    menuButton = WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable(
+                            (By.XPATH, "//button[@class='nav-menu-toggle']")
+                        )
+                    )
+                    menuButton.click()
+                except:
+                    log.debug("Menu button not found, assuming already open.")
+
+                # Click on Dashboard again to get back to the list...
+                log.debug("Go to dashboard")
+                dashboardHyperlink = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, "//a[text()='Dashboard']"))
+                )
+                dashboardHyperlink.click()
+
     except:
+        log.exception("Exception: ")
         log.error("An error occurred during the operation.")
 
     finally:
