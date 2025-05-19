@@ -21,18 +21,22 @@ log = logging.getLogger(__name__)
 LOGIN_ATTEMPTS = 5
 
 # Timeout intervals intervals.
-COOKIES_BANNER_TIMEOUT = 10
-LOGIN_FAILED_TIMEOUT = 10
-LOGIN_BUTTON_TIMEOUT = 10
-USERNAME_PASSWORD_TIMEOUT = 10
-USER_LOGGED_IN_TIMEOUT = 10
-MENU_TIMEOUT = 10
-DASHBOARD_TIMEOUT = 10
-WORKOUTS_TIMEOUT = 10
-WORKOUT_ITEMS_TIMEOUT = 10
-MORE_ACTIVITIES_TIMEOUT = 10
+COOKIES_BANNER_TIMEOUT = 30
+LOGIN_FAILED_TIMEOUT = 30
+LOGIN_BUTTON_TIMEOUT = 30
+USERNAME_PASSWORD_TIMEOUT = 30
+USER_LOGGED_IN_TIMEOUT = 30
+MENU_TIMEOUT = 30
+DASHBOARD_TIMEOUT = 30
+WORKOUTS_TIMEOUT = 30
+WORKOUT_ITEMS_TIMEOUT = 30
+MORE_ACTIVITIES_TIMEOUT = 30
 ACTIVITY_LOAD_TIMEOUT = 40
-EXPORT_TIMEOUT = 10
+EXPORT_TIMEOUT = 30
+
+# Throttle times.
+THROTTLE_MIN = 2.0
+THROTTLE_MAX = 5.0
 
 # Duplicate files regex.
 DUPLICATE_FILES_REGEX = re.compile(r"^.*\(\d+\)\.gpx$")
@@ -170,10 +174,17 @@ def main(argv: List[str]):
         driver = webdriver.Chrome(options=options)
     elif args.edge:
         log.info("Using Edge WebDriver...")
-        driver = webdriver.Chrome()
+        options = webdriver.edge.options.Options()
+        # Suppress 'DevTools listening' message.
+        options.add_experimental_option("excludeSwitches", ["enable-logging"])
+        if args.output:
+            prefs = {"download.default_directory": args.output}
+            options.add_experimental_option("prefs", prefs)
+        driver = webdriver.Edge(options)
     elif args.firefox:
         log.info("Using Firefox WebDriver...")
-        driver = webdriver.Chrome()
+        options = webdriver.FirefoxOptions()
+        driver = webdriver.Firefox(options=options)
     elif args.safari:
         log.info("Using Safari WebDriver...")
         driver = webdriver.Safari()
@@ -386,6 +397,9 @@ def main(argv: List[str]):
                     EC.element_to_be_clickable((By.XPATH, "//a[text()='Dashboard']"))
                 )
                 dashboardHyperlink.click()
+
+                # Throttle the download to avoid being blocked.
+                sleep(THROTTLE_MIN + random() * (THROTTLE_MAX - THROTTLE_MIN))
 
             # Done downloading; print final "\n" to make it look nice.
             print("", file=sys.stderr, flush=True)
