@@ -12,8 +12,30 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from time import sleep
 from random import random
+import re
+import os
 
 log = logging.getLogger(__name__)
+
+# Login is flakey so we try a few times.
+LOGIN_ATTEMPTS = 5
+
+# Timeout intervals intervals.
+COOKIES_BANNER_TIMEOUT = 10
+LOGIN_FAILED_TIMEOUT = 10
+LOGIN_BUTTON_TIMEOUT = 10
+USERNAME_PASSWORD_TIMEOUT = 10
+USER_LOGGED_IN_TIMEOUT = 10
+MENU_TIMEOUT = 10
+DASHBOARD_TIMEOUT = 10
+WORKOUTS_TIMEOUT = 10
+WORKOUT_ITEMS_TIMEOUT = 10
+MORE_ACTIVITIES_TIMEOUT = 10
+ACTIVITY_LOAD_TIMEOUT = 40
+EXPORT_TIMEOUT = 10
+
+# Duplicate files regex.
+DUPLICATE_FILES_REGEX = re.compile(r"^.*\(\d+\)\.gpx$")
 
 
 def argparse(argv: List[str]) -> Namespace:
@@ -63,6 +85,17 @@ def argparse(argv: List[str]) -> Namespace:
         "--safari", action="store_true", help="Use Safari WebDriver"
     )
 
+    outputGroup = parser.add_argument_group("output", "Output options")
+    outputGroup.add_argument(
+        "-o", "--output", action="store", help="Downloaded files output directory"
+    )
+    outputGroup.add_argument(
+        "-c",
+        "--clean",
+        action="store_true",
+        help="Clean duplicated files from output directory after downloading",
+    )
+
     args: Namespace = parser.parse_args(argv)
 
     if args.username and not args.password:
@@ -72,6 +105,9 @@ def argparse(argv: List[str]) -> Namespace:
 
     if not args.chrome and not args.edge and not args.firefox and not args.safari:
         parser.error("A WebDriver must be specified.")
+
+    if args.clean and not args.output:
+        parser.error("Output directory required when cleaning duplicate files.")
 
     return args
 
@@ -103,14 +139,12 @@ def setLogging(args: Namespace) -> None:
     consoleFormatter = logging.Formatter("%(message)s")
     consoleHandler.setFormatter(consoleFormatter)
     log.addHandler(consoleHandler)
-    if args.verbose >= 3:
+    if args.verbose >= 2:
         consoleHandler.setLevel(logging.DEBUG)
-    elif args.verbose == 2:
-        consoleHandler.setLevel(logging.INFO)
     elif args.verbose == 1:
-        consoleHandler.setLevel(logging.WARNING)
+        consoleHandler.setLevel(logging.INFO)
     else:
-        consoleHandler.setLevel(logging.ERROR)
+        consoleHandler.setLevel(logging.WARNING)
 
 
 def main(argv: List[str]):
@@ -123,20 +157,21 @@ def main(argv: List[str]):
     # Connect to the Selenium WebBrowser
     log.info("Connecting to the WebBrowser...")
     if args.chrome:
-        log.info("Using Chrome WebDriver")
+        log.info("Using Chrome WebDriver...")
         options = webdriver.chrome.options.Options()
-        prefs = {"download.default_directory": "c:\\temp\\gpx"}
         # options.add_argument("headless")
-        options.add_experimental_option("prefs", prefs)
+        if args.output:
+            prefs = {"download.default_directory": args.output}
+            options.add_experimental_option("prefs", prefs)
         driver = webdriver.Chrome(options=options)
     elif args.edge:
-        log.info("Using Edge WebDriver")
+        log.info("Using Edge WebDriver...")
         driver = webdriver.Chrome()
     elif args.firefox:
-        log.info("Using Firefox WebDriver")
+        log.info("Using Firefox WebDriver...")
         driver = webdriver.Chrome()
     elif args.safari:
-        log.info("Using Safari WebDriver")
+        log.info("Using Safari WebDriver...")
         driver = webdriver.Safari()
     else:
         log.error(
@@ -153,26 +188,26 @@ def main(argv: List[str]):
         log.info("Logging in to Sports-Tracker...")
         log.debug("Declining cookies")
         # We have to wait for the cookies banner to appear.
-        declineCookies = WebDriverWait(driver, 10).until(
+        declineCookies = WebDriverWait(driver, COOKIES_BANNER_TIMEOUT).until(
             EC.presence_of_element_located(
                 (By.XPATH, "//button[contains(text(),'Decline All')]")
             )
         )
-        # declineCookies = driver.find_element("xpath", "//button[text()='Decline All']")
         declineCookies.click()
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, COOKIES_BANNER_TIMEOUT).until(
             EC.invisibility_of_element_located(declineCookies)
         )
         log.debug("Finding the login button")
         logInButton = driver.find_element("xpath", "//button[text()='Login']")
         logInButton.click()
+
         log.debug("Enter username and password")
-        usernameField = WebDriverWait(driver, 10).until(
+        usernameField = WebDriverWait(driver, USERNAME_PASSWORD_TIMEOUT).until(
             EC.presence_of_element_located(
                 (By.XPATH, "//input[@placeholder='Email or username']")
             )
         )
-        passwordField = WebDriverWait(driver, 10).until(
+        passwordField = WebDriverWait(driver, USERNAME_PASSWORD_TIMEOUT).until(
             EC.presence_of_element_located(
                 (By.XPATH, "//input[@placeholder='Password']")
             )
@@ -181,7 +216,7 @@ def main(argv: List[str]):
         usernameField.send_keys(args.username)
         passwordField.send_keys(args.password)
 
-        facebookSpan = WebDriverWait(driver, 2).until(
+        WebDriverWait(driver, LOGIN_FAILED_TIMEOUT).until(
             EC.presence_of_element_located(
                 (
                     By.XPATH,
@@ -189,30 +224,45 @@ def main(argv: List[str]):
                 )
             )
         )
+
         # Login seems to be flakey so loop it and try three times!
         attempts = 0
         while True:
             log.debug("Clicking on the login button")
-            logInButton = WebDriverWait(driver, 10).until(
+            # Randomise the wait before clicking the login button.
+            sleep(1 + random() * 2)
+
+            logInButton = WebDriverWait(driver, LOGIN_BUTTON_TIMEOUT).until(
                 EC.element_to_be_clickable((By.XPATH, "//input[@value='Login']"))
             )
             logInButton.send_keys(Keys.ENTER)
-            sleep(1)
+
+            # We have to wait for the login dialog to disappear before we test
+            # to see if login was successful.
+            sleep(2)
 
             try:
-                facebookSpan = WebDriverWait(driver, 2).until(
-                    EC.presence_of_element_located(
-                        (
-                            By.XPATH,
-                            "//span[text()='Login with Facebook']",
-                        )
+                log.debug("Checking if logged in")
+                WebDriverWait(driver, USER_LOGGED_IN_TIMEOUT).until(
+                    EC.element_to_be_clickable(
+                        (By.XPATH, "//button[@ng-show='loggedInUser']")
                     )
                 )
-                log.debug("Facebook buttont is visible.")
-            except Exception as ee:
-                log.debug("Login appears to have succeeded")
-                # No oops so assume we are OK.
+                log.info("Login was successful...")
                 break
+                # WebDriverWait(driver, LOGIN_FAILED_TIMEOUT).until(
+                #     EC.presence_of_element_located(
+                #         (
+                #             By.XPATH,
+                #             "//span[text()='Login with Facebook']",
+                #         )
+                #     )
+                # )
+                # log.debug("Facebook button is visible.")
+
+            except Exception as ee:
+                # No logged in user so we failed.
+                pass
 
             log.debug("Login failed, retrying...")
             usernameField.clear()
@@ -220,28 +270,22 @@ def main(argv: List[str]):
             usernameField.send_keys(args.username)
             passwordField.send_keys(args.password)
             attempts += 1
-            if attempts > 5:
-                log.error("Failed to login after 5 attempts.")
-                raise Exception("Failed to login after 5 attempts.")
-            sleep(1 + random() * 2)
+            if attempts > LOGIN_ATTEMPTS:
+                log.error("Failed to login after %d attempts.", LOGIN_ATTEMPTS)
+                raise Exception("Failed to login after %d attempts." % LOGIN_ATTEMPTS)
 
     try:
         # Confirm that we see the "Dashboard" element.
-        log.debug("Checking if logged in")
-        WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[@ng-show='loggedInUser']"))
-        )
         amLoggedIn = True
         # Now do the activity requested.
         if args.mode == "list":
             log.info("Listing activities...")
 
         elif args.mode == "download":
-            log.info("Downloading activities...")
-
+            log.info("'Download activities' requested...")
             log.debug("Check if Menu visible")
             try:
-                menuButton = WebDriverWait(driver, 10).until(
+                menuButton = WebDriverWait(driver, MENU_TIMEOUT).until(
                     EC.element_to_be_clickable(
                         (By.XPATH, "//button[@class='nav-menu-toggle']")
                     )
@@ -251,37 +295,58 @@ def main(argv: List[str]):
                 log.debug("Menu button not found, assuming already open.")
 
             log.debug("Go to dashboard")
-            dashboardHyperlink = WebDriverWait(driver, 10).until(
+            dashboardHyperlink = WebDriverWait(driver, DASHBOARD_TIMEOUT).until(
                 EC.element_to_be_clickable((By.XPATH, "//a[text()='Dashboard']"))
             )
             dashboardHyperlink.click()
 
             log.debug("Goto 'My Workouts'")
-            myWorkoutsSpan = WebDriverWait(driver, 10).until(
+            myWorkoutsSpan = WebDriverWait(driver, WORKOUTS_TIMEOUT).until(
                 EC.element_to_be_clickable((By.XPATH, "//span[text()='My workouts']"))
             )
             myWorkoutsSpan.click()
 
+            # Repeatedly click on "Load more activities" until we have them all.
+            log.info("Loading all activities...")
+            while True:
+                try:
+                    loadMoreSpan = WebDriverWait(driver, MORE_ACTIVITIES_TIMEOUT).until(
+                        EC.element_to_be_clickable(
+                            (By.XPATH, "//span[text()='Load more activities']")
+                        )
+                    )
+                    loadMoreSpan.click()
+                except:
+                    # Assume we have found them all now.
+                    break
+
             log.debug("listing workouts")
             # Get all elements of type li and class "workout-item"
-            workoutItems = WebDriverWait(driver, 10).until(
+            workoutItems = WebDriverWait(driver, WORKOUT_ITEMS_TIMEOUT).until(
                 EC.presence_of_all_elements_located(
                     (By.XPATH, "//li[@class='workout-item']")
                 )
             )
 
-            log.debug("download file for workouts")
+            # Find the hrefs to each workout and convert to absolute URLs.
+            workoutAbsUrls = []
+
+            log.info("Downloading %d activities...", len(workoutItems))
             for workoutItem in workoutItems:
                 log.debug("Clicking on workout item")
                 # Click on the workoutItem to open the workout.
                 feedCardHref = workoutItem.find_element(
-                    By.XPATH, "//a[@class='feed-card__link']"
+                    By.XPATH, ".//a[@class='feed-card__link']"
                 )
-                feedCardHref.click()
+                workoutAbsUrls.append(feedCardHref.get_attribute("href"))
 
+            for workoutAbsUrl in workoutAbsUrls:
                 # Wait for and then click on the 'Edit' button.
                 log.debug("Click on the Edit button")
-                editButton = WebDriverWait(driver, 10).until(
+                print(".", end="", file=sys.stderr, flush=True)
+                driver.get(workoutAbsUrl)
+
+                editButton = WebDriverWait(driver, ACTIVITY_LOAD_TIMEOUT).until(
                     EC.element_to_be_clickable((By.XPATH, "//button[text()='Edit']"))
                 )
                 editButton.click()
@@ -289,12 +354,12 @@ def main(argv: List[str]):
                 # Wait for and then click on the 'Export' button.  We do not get the
                 # file save dialog in test-mode.
                 log.debug("Clicking on the 'Export' button")
-                exportButton = WebDriverWait(driver, 10).until(
+                exportButton = WebDriverWait(driver, EXPORT_TIMEOUT).until(
                     EC.element_to_be_clickable((By.XPATH, "//button[text()='Export']"))
                 )
                 exportButton.click()
 
-                # We dno't seem able to catch the "Cancel" button so we just
+                # We don't seem able to catch the "Cancel" button so we just
                 # send the ESC key.
                 log.debug("Using ESC to exit the dialog")
                 actions = ActionChains(driver)
@@ -302,7 +367,7 @@ def main(argv: List[str]):
 
                 log.debug("Check if Menu visible")
                 try:
-                    menuButton = WebDriverWait(driver, 10).until(
+                    menuButton = WebDriverWait(driver, MENU_TIMEOUT).until(
                         EC.element_to_be_clickable(
                             (By.XPATH, "//button[@class='nav-menu-toggle']")
                         )
@@ -313,10 +378,21 @@ def main(argv: List[str]):
 
                 # Click on Dashboard again to get back to the list...
                 log.debug("Go to dashboard")
-                dashboardHyperlink = WebDriverWait(driver, 10).until(
+                dashboardHyperlink = WebDriverWait(driver, DASHBOARD_TIMEOUT).until(
                     EC.element_to_be_clickable((By.XPATH, "//a[text()='Dashboard']"))
                 )
                 dashboardHyperlink.click()
+
+            # Done downloading; print final "\n" to make it look nice.
+            print("", file=sys.stderr, flush=True)
+
+            if args.output and args.clean:
+                log.info("Cleaning up duplicate files...")
+                (_, _, filenames) = os.walk(args.output)
+                for filename in filenames:
+                    if DUPLICATE_FILES_REGEX.match(filename):
+                        log.debug("Deleting duplicate file: %s", filename)
+                        os.remove(os.path.join(args.output, filename))
 
     except:
         log.exception("Exception: ")
