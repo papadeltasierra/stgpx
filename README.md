@@ -14,6 +14,7 @@ This tool does the following:
 
 ### Issues
 1. The log-in process sometimes fails.  The script makes 5 attempts to login and will give-up after that.  Waiting a while and retrying the script normally works.
+1. After a number of attempts, log-in consistently fails.  I suspect this is Sports-Tracker getting shirty but retrying after about 15 minutes seems to solve this.
 
 ## Installation
 
