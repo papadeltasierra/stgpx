@@ -160,6 +160,10 @@ def main(argv: List[str]):
         log.info("Using Chrome WebDriver...")
         options = webdriver.chrome.options.Options()
         # options.add_argument("headless")
+        # Suppress off 'Tensor' message.
+        options.add_argument("--log-level=1")
+        # Suppress 'DevTools listening' message.
+        options.add_experimental_option("excludeSwitches", ["enable-logging"])
         if args.output:
             prefs = {"download.default_directory": args.output}
             options.add_experimental_option("prefs", prefs)
@@ -213,24 +217,28 @@ def main(argv: List[str]):
             )
         )
 
-        usernameField.send_keys(args.username)
-        passwordField.send_keys(args.password)
-
-        WebDriverWait(driver, LOGIN_FAILED_TIMEOUT).until(
-            EC.presence_of_element_located(
-                (
-                    By.XPATH,
-                    "//span[text()='Login with Facebook']",
-                )
-            )
-        )
+        # WebDriverWait(driver, LOGIN_FAILED_TIMEOUT).until(
+        #     EC.presence_of_element_located(
+        #         (
+        #             By.XPATH,
+        #             "//span[text()='Login with Facebook']",
+        #         )
+        #     )
+        # )
 
         # Login seems to be flakey so loop it and try three times!
         attempts = 0
         while True:
+            log.debug("Sending username and password")
+            usernameField.clear()
+            usernameField.send_keys(args.username)
+            sleep(0.5 + random() * 0.5)
+            passwordField.clear()
+            passwordField.send_keys(args.password)
+
             log.debug("Clicking on the login button")
             # Randomise the wait before clicking the login button.
-            sleep(1 + random() * 2)
+            sleep(0.5 + random() * 1)
 
             logInButton = WebDriverWait(driver, LOGIN_BUTTON_TIMEOUT).until(
                 EC.element_to_be_clickable((By.XPATH, "//input[@value='Login']"))
@@ -265,10 +273,6 @@ def main(argv: List[str]):
                 pass
 
             log.debug("Login failed, retrying...")
-            usernameField.clear()
-            passwordField.clear()
-            usernameField.send_keys(args.username)
-            passwordField.send_keys(args.password)
             attempts += 1
             if attempts > LOGIN_ATTEMPTS:
                 log.error("Failed to login after %d attempts.", LOGIN_ATTEMPTS)
