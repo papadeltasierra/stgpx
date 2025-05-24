@@ -8,6 +8,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.wait import WebDriverWait
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from time import sleep
@@ -19,6 +20,7 @@ log = logging.getLogger(__name__)
 
 # Login is flakey so we try a few times.
 LOGIN_ATTEMPTS = 5
+EXPORT_ATTEMPTS = 3
 
 # Timeout intervals intervals.
 COOKIES_BANNER_TIMEOUT = 30
@@ -38,8 +40,31 @@ EXPORT_TIMEOUT = 30
 THROTTLE_MIN = 2.0
 THROTTLE_MAX = 5.0
 
+# Sleep between export retries
+EXPORT_SLEEP = 2.0
+
 # Duplicate files regex.
 DUPLICATE_FILES_REGEX = re.compile(r"^.*\(\d+\)\.gpx$")
+
+# Possible per-route info
+# - Start from
+# - End at
+# - Route name ?
+# - Exercise type (running, cycling)
+# - GPX data
+# - Duration
+# - Distance
+# - Average speed
+# - Energy
+# - Max speed
+# - Ascent
+# - Descent
+# - HR max
+# - HR avg
+# - HR band times (detailed)
+# - Laps (per mile)
+#   - Avg speed
+#   - HR avg
 
 
 def argparse(argv: List[str]) -> Namespace:
@@ -355,58 +380,90 @@ def main(argv: List[str]):
                 )
                 workoutAbsUrls.append(feedCardHref.get_attribute("href"))
 
+            # We have seen this section hit random timeouts so we use a try/except
+            # to try and retry.
             for workoutAbsUrl in workoutAbsUrls:
-                # Wait for and then click on the 'Edit' button.
-                log.debug("Click on the Edit button")
-                print(".", end="", file=sys.stderr, flush=True)
-                driver.get(workoutAbsUrl)
+                retries = 0
+                while True:
+                    try:
+                        # Wait for and then click on the 'Edit' button.
+                        log.debug("Click on the Edit button")
+                        print(".", end="", file=sys.stderr, flush=True)
+                        driver.get(workoutAbsUrl)
 
-                editButton = WebDriverWait(driver, ACTIVITY_LOAD_TIMEOUT).until(
-                    EC.element_to_be_clickable((By.XPATH, "//button[text()='Edit']"))
-                )
-                editButton.click()
-
-                # Wait for and then click on the 'Export' button.  We do not get the
-                # file save dialog in test-mode.
-                log.debug("Clicking on the 'Export' button")
-                exportButton = WebDriverWait(driver, EXPORT_TIMEOUT).until(
-                    EC.element_to_be_clickable((By.XPATH, "//button[text()='Export']"))
-                )
-                exportButton.click()
-
-                # We don't seem able to catch the "Cancel" button so we just
-                # send the ESC key.
-                log.debug("Using ESC to exit the dialog")
-                actions = ActionChains(driver)
-                actions.send_keys(Keys.ESCAPE).perform()
-
-                log.debug("Check if Menu visible")
-                try:
-                    menuButton = WebDriverWait(driver, MENU_TIMEOUT).until(
-                        EC.element_to_be_clickable(
-                            (By.XPATH, "//button[@class='nav-menu-toggle']")
+                        editButton = WebDriverWait(driver, ACTIVITY_LOAD_TIMEOUT).until(
+                            EC.element_to_be_clickable(
+                                (By.XPATH, "//button[text()='Edit']")
+                            )
                         )
-                    )
-                    menuButton.click()
-                except:
-                    log.debug("Menu button not found, assuming already open.")
+                        editButton.click()
 
-                # Click on Dashboard again to get back to the list...
-                log.debug("Go to dashboard")
-                dashboardHyperlink = WebDriverWait(driver, DASHBOARD_TIMEOUT).until(
-                    EC.element_to_be_clickable((By.XPATH, "//a[text()='Dashboard']"))
-                )
-                dashboardHyperlink.click()
+                        # Wait for and then click on the 'Export' button.  We do not get the
+                        # file save dialog in test-mode.
+                        log.debug("Clicking on the 'Export' button")
+                        exportButton = WebDriverWait(driver, EXPORT_TIMEOUT).until(
+                            EC.element_to_be_clickable(
+                                (By.XPATH, "//button[text()='Export']")
+                            )
+                        )
+                        exportButton.click()
 
-                # Throttle the download to avoid being blocked.
-                sleep(THROTTLE_MIN + random() * (THROTTLE_MAX - THROTTLE_MIN))
+                        # We don't seem able to catch the "Cancel" button so we just
+                        # send the ESC key.
+                        log.debug("Using ESC to exit the dialog")
+                        actions = ActionChains(driver)
+                        actions.send_keys(Keys.ESCAPE).perform()
+
+                        log.debug("Check if Menu visible")
+                        try:
+                            menuButton = WebDriverWait(driver, MENU_TIMEOUT).until(
+                                EC.element_to_be_clickable(
+                                    (By.XPATH, "//button[@class='nav-menu-toggle']")
+                                )
+                            )
+                            menuButton.click()
+                        except:
+                            log.debug("Menu button not found, assuming already open.")
+
+                        # Click on Dashboard again to get back to the list...
+                        log.debug("Go to dashboard")
+                        dashboardHyperlink = WebDriverWait(
+                            driver, DASHBOARD_TIMEOUT
+                        ).until(
+                            EC.element_to_be_clickable(
+                                (By.XPATH, "//a[text()='Dashboard']")
+                            )
+                        )
+                        dashboardHyperlink.click()
+
+                        # Throttle the download to avoid being blocked.
+                        sleep(THROTTLE_MIN + random() * (THROTTLE_MAX - THROTTLE_MIN))
+                        break
+
+                    except TimeoutException:
+                        # If we get a timeout, retry the download.
+                        log.debug("Timeout exception, retrying...")
+                        retries += 1
+                        if retries > EXPORT_ATTEMPTS:
+                            log.error("Failed to download after %d attempts.", retries)
+                            raise Exception(
+                                "Failed to download after %d attempts." % retries
+                            )
+                        print(
+                            "%s" % chr(ord("0") + retries),
+                            end="",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+
+                        sleep(EXPORT_SLEEP)
 
             # Done downloading; print final "\n" to make it look nice.
             print("", file=sys.stderr, flush=True)
 
             if args.output and args.clean:
                 log.info("Cleaning up duplicate files...")
-                (_, _, filenames) = os.walk(args.output)
+                _, _, filenames = os.walk(args.output)
                 for filename in filenames:
                     if DUPLICATE_FILES_REGEX.match(filename):
                         log.debug("Deleting duplicate file: %s", filename)
