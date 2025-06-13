@@ -1,4 +1,10 @@
 # STGPX - Sports-Tracker GPX Downloader
+
+## Export from The App!
+I chanced upon how to download the same data from your Android (and presumably IoS) app instead of having to use this tool.  The image below shows the four screenshots from the startnig app screen and the places for you to click.  Enjoy!
+
+![Screen shots to export Sports-Tracker dtaa via your app](./images/export.png "Export Screenshorts")
+---
 A tool for exporting and downloading GPX files for all activities from the [Sports Tracker] website.
 
 > The author is unrelated to [Sports Tracker] in any way and takes no resposibiilty for any loss of activity data or access to your [Sports Tracker] account as a result of using this tool.
